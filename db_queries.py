@@ -8,6 +8,7 @@ def get_query_monthly_kwh_and_charge_event(schema_name):
   # and sums the total usage in kWh
   return f"""
         SELECT
+        date_trunc('month', end_date_time) AS month,
         EXTRACT(YEAR FROM end_date_time) AS year_no,
         EXTRACT(MONTH FROM end_date_time) AS month_no,
         meter_name,
@@ -15,6 +16,7 @@ def get_query_monthly_kwh_and_charge_event(schema_name):
         SUM(total_usage_kwh) AS total_usage_kwh
     FROM {schema_name}.fact_meter_readings
     GROUP BY
+        month,
         EXTRACT(YEAR FROM end_date_time),
         EXTRACT(MONTH FROM end_date_time),
         meter_name
@@ -24,7 +26,7 @@ def get_query_monthly_kwh_and_charge_event(schema_name):
         meter_name;
     """
 
-def get_query_daily_kwh_(schema_name):
+def get_query_daily_kwh(schema_name):
   """
   Query to get the daily kWh usage for each meter.
   """

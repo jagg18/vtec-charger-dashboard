@@ -1,0 +1,18 @@
+[theme]
+base="dark"
+primaryColor="#00A4B6" #Orangi Dark
+backgroundColor="#FFFFFF"
+secondaryBackgroundColor="#E6E7E8"
+textColor="#31333F"
+font="sans serif"
+
+ #00A4B6 Turkey
+ #BE4127 Orangi Dark
+ #E6E7E8 Greyn Extra Light
+ #31333F
+
+# Altair Chart Colors
+ #00A4B6
+ #BE4127
+ #81ACBB
+ #F8962F

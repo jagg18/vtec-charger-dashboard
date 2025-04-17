@@ -31,17 +31,20 @@ def generate_tooltip(dict_tooltips):
         for key, val in dict_tooltips.items()
     ]
 
-def render_chart(data, label_x, label_y, legend, title, divider, date_range, dict_tooltips=None):
+def render_chart(data, label_x, label_y, legend, title, date_range, custom_colors, dict_tooltips=None):
     # st.dataframe(data, use_container_width=True)
-    st.subheader(title, divider=divider)
     st.markdown(
-        f"""
-        - **Click on the legend** to toggle meter names on and off.
-        - **Click and drag on the timeline chart** below to zoom into a specific date range.
-        - **Hover over the lines** on the chart to view exact usage values and details.
-        - **Click the button on the top right corner of the table** to download the data as a CSV file.
-        """
-    )
+            f"""
+            ### {title}
+            <hr style='border:1px solid {st.get_option('theme.primaryColor')}; margin-top: -0.5em; margin-bottom: 1em;'>
+
+            - **Click on the legend** to toggle meter names on and off.
+            - **Click and drag on the timeline chart** below to zoom into a specific date range.
+            - **Hover over the lines** on the chart to view exact usage values and details.
+            - **Click the button on the top right corner of the table** to download the data as a CSV file.
+            """,
+            unsafe_allow_html=True
+        )
 
     interval = alt.selection_interval(encodings=['x'], value={'x': date_range})
     selection = alt.selection_point(fields=[legend], bind='legend')
@@ -63,7 +66,7 @@ def render_chart(data, label_x, label_y, legend, title, divider, date_range, dic
     base = alt.Chart(data).mark_line().encode(
         x=alt.X(f'{label_x}:T', axis=alt.Axis(format='%b %Y')),
         y=alt.Y(f'{label_y}:Q'),
-        color=f'{legend}:N',
+        color=alt.Color(f'{legend}:N', scale=alt.Scale(range=custom_colors)),
         opacity=alt.condition(selection, alt.value(1), alt.value(0.2)),
         tooltip=tooltip
     ).properties(
@@ -93,8 +96,8 @@ def get_df_monthly_summary():
     query = db.get_query_monthly_kwh_and_charge_event(st.secrets.datasource.schema_name)
     return get_df_from_db(query)
 
-def get_weekly_data():
-    query = db.get_query_daily_kwh_(st.secrets.datasource.schema_name)
+def get_daily_data():
+    query = db.get_query_daily_kwh(st.secrets.datasource.schema_name)
     return get_df_from_db(query)
 
 def get_pivot_monthly_summary(df):
@@ -162,30 +165,61 @@ def render_metrics_all_time(df):
     index_l1 = df.index.levels[1]
 
     for i in range(len(index_l1)):
-        st.subheader(f"**{index_l1[i]}**", divider="rainbow")
+        st.markdown(
+            f"""
+            ##### {index_l1[i]}
+            """,
+            unsafe_allow_html=True
+        )
+
+
         cols = st.columns(len(index_l0))
         for j, col in enumerate(cols):
             col.metric(
                 label=index_l0[j],
-                value=f"{df[index_l0[j]].loc[index_l1[i]]:.2f}",
+                value=(
+                    # HACK Format the value based on the metric type
+                    f"{int(df[index_l0[j]].loc[index_l1[i]])}" if index_l1[i] == 'Charging Events' else
+                    f"{df[index_l0[j]].loc[index_l1[i]]:.2f}"
+                    ),
                 delta=None, delta_color="normal", label_visibility="visible", border=True)
 
 def app():
     
+    custom_colors = [
+        '#00A4B6',
+        '#DF2048',
+        '#81ACBB',
+        '#F8962F',
+        '#BE4127',
+        '#86BB7D',
+        '#EBD11C',
+    ]
     
     st.write("Fetching data from the database...")
     
     # Fetch data
     df_base = get_df_monthly_summary()
     # st.dataframe(df_base, use_container_width=True)
+    df_daily = get_daily_data()
 
-    
+    start_date = None
+    end_date = None
+
     # Display data in the app
     if not df_base.empty:
         st.write("Data fetched successfully!")
 
         st.title("VTEC Charger Data Dashboard")
-        st.subheader("Dashboard Overview", divider="rainbow")
+        st.markdown(
+            f"""
+            ### Dashboard Overview
+            <hr style='border:1px solid {st.get_option('theme.primaryColor')}; margin-top: -0.5em; margin-bottom: 1em;'>
+
+            """,
+            unsafe_allow_html=True
+        )
+        
         st.markdown(
         """
         This dashboard visualizes the usage trends of VTEC chargers over time. Data is aggregated monthly by meter and presented through interactive charts.
@@ -199,9 +233,44 @@ def app():
         Gain insights into when and how VTEC chargers are being used most effectively.
         """)
 
-        st.subheader("All-Time Usage")
+        with st.sidebar:
+            st.subheader("Filter by Date")
+            st.markdown(
+                """
+                Use the date filters to select a range of months for analysis.
+                """
+            )
+            # --- Date filter component ---
+            start_date = st.date_input(
+                "Select start date",
+                value=df_base['month'].min(),
+            )
+
+            # --- Date filter component ---
+            end_date = st.date_input(
+                "Select end date",
+                value=(date.today()),
+            )
+
+            # Check if a valid range was selected
+            if start_date > end_date:
+                st.warning("Please select a valid start and end date.")
+
+        # Check if a valid range was selected
+        if start_date <= end_date:
+            filtered_df = df_base[(df_base['month'] >= start_date) & (df_base['month'] <= end_date)]
+        else:
+            filtered_df = df_base
+
+        st.markdown(
+            f"""
+            ### All-Time Usage
+            <hr style='border:1px solid {st.get_option('theme.primaryColor')}; margin-top: -0.5em; margin-bottom: 1em;'>
+            """,
+            unsafe_allow_html=True
+        )
         # Pivot the DataFrame to show meters as columns
-        df_pivot_monthly_summary = get_pivot_monthly_summary(df_base)
+        df_pivot_monthly_summary = get_pivot_monthly_summary(filtered_df)
 
         # Reorder MultiIndex to: meter_name (level 0), metric (level 1)
         df_pivot_monthly_summary.columns = df_pivot_monthly_summary.columns.swaplevel(0, 1)
@@ -211,6 +280,7 @@ def app():
         
         # Display all-time metrics
         df_totals_condensed = df_pivot_monthly_summary.sum()
+        df_totals_condensed = df_totals_condensed.round(2)
         # st.subheader("All-Time Usage Totals")
         # st.dataframe(df_totals, use_container_width=True)
         render_metrics_all_time(df_totals_condensed)
@@ -218,12 +288,11 @@ def app():
         # Get date range from today - 11 months
         date_range = (date.today(), date.today())
 
-        df_timestamp = df_base.copy()
+        df_timestamp = filtered_df.copy()
         df_timestamp['month'] = pd.to_datetime(
             df_timestamp['year_no'].astype(str) + '-' +
             df_timestamp['month_no'].astype(str)
         ).dt.strftime('%b %Y')
-        # df_timestamp['month'] = df_timestamp['month']
         
         render_chart(
             data=df_timestamp,
@@ -231,44 +300,58 @@ def app():
             label_y='total_usage_kwh',
             legend='meter_name',
             title='Monthly Total Usage per Meter',
-            divider='rainbow',
-            date_range=date_range
+            date_range=date_range,
+            custom_colors=custom_colors,
         )
 
         # Get totals
         df_totals = get_totals(df_pivot_monthly_summary)
         # Display the monthly summary table
         render_df_monthly_summary(df_totals)
-    else:
-        st.warning("No data available.")
 
-    # Fetch data
-    df_weekly = get_weekly_data()
+        # Fetch weekly data
+    
 
-    if not df_weekly.empty:
+    if not df_daily.empty:
+        # st.write(start_date, end_date)
+        # st.dataframe(df_daily, use_container_width=True)
+
+        # Check if a valid range was selected
+        if start_date <= end_date:
+            filtered_df = df_daily[
+                (df_daily['year'].astype(int) >= start_date.year) & 
+                (df_daily['year'].astype(int) <= end_date.year)
+            ]
+        else:
+            filtered_df = df_daily
+
+
         # Define your custom order
         day_order = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
         # Set day_name as categorical with the custom order
-        df_weekly['day_name'] = pd.Categorical(df_weekly['day_name'], categories=day_order, ordered=True)
+        df_daily['day_name'] = pd.Categorical(df_daily['day_name'], categories=day_order, ordered=True)
 
         # Create legend selection for year
         year_selection = alt.selection_point(fields=['year'], bind='legend')
 
-        st.subheader("Meter Usage by Day of the Week", divider="rainbow")
         st.markdown(
-            """
+            f"""
+            ### Meter Usage by Day of the Week
+            <hr style='border:1px solid {st.get_option('theme.primaryColor')}; margin-top: -0.5em; margin-bottom: 1em;'>
+
             This chart shows the total usage of each meter by day of the week.
             - **Click on the legend** to toggle year selection.
             - **Hover over the bars** to view exact usage values and details.
             - Click the button on the top right corner of the chart to download an image.
-            """
+            """,
+            unsafe_allow_html=True
         )
 
         # Create grouped bar chart
-        base_chart = alt.Chart(df_weekly).mark_bar().encode(
+        base_chart = alt.Chart(filtered_df).mark_bar().encode(
             x=alt.X('day_name:N', title='Day of the Week', sort=day_order),
             y=alt.Y('total_usage_kwh:Q', title='Total Usage (kWh)'),
-            color=alt.Color('year:N', title='Year'),
+            color=alt.Color('year:N', title='Year', scale=alt.Scale(range=custom_colors)),
             xOffset='year:N',
             opacity=alt.condition(year_selection, alt.value(1), alt.value(0.2)),
             tooltip=['year', 'meter_name', 'day_name', 'total_usage_kwh']
@@ -284,6 +367,8 @@ def app():
         )
 
         st.altair_chart(chart, use_container_width=True)
+    else:
+        st.warning("No data available.")
 
 # Run the app
 if __name__ == '__main__':
