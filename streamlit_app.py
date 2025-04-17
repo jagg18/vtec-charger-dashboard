@@ -1,6 +1,8 @@
+from datetime import date
 import duckdb
 import pandas as pd
 
+import db_queries as db
 import streamlit as st
 import altair as alt
 
@@ -15,13 +17,47 @@ def get_df_from_db(query):
     conn.close()
     return df
 
-def render_chart(data, label_x, label_y, legend, title, divider, date_range):
-    st.header(title, divider=divider)
+def generate_tooltip(dict_tooltips):
+    """
+    Generate tooltip for Altair chart.
+    """
+    if dict_tooltips is None:
+        return []
+    return [
+        alt.Tooltip(f'{key}:T', title=val) if val is date else
+        alt.Tooltip(f'{key}:B', title=val) if isinstance(val, bool) else
+        alt.Tooltip(f'{key}:Q', title=val) if isinstance(val, (int, float)) else
+        alt.Tooltip(f'{key}:N', title=val)
+        for key, val in dict_tooltips.items()
+    ]
+
+def render_chart(data, label_x, label_y, legend, title, divider, date_range, dict_tooltips=None):
+    # st.dataframe(data, use_container_width=True)
+    st.subheader(title, divider=divider)
+    st.markdown(
+        f"""
+        - **Click on the legend** to toggle meter names on and off.
+        - **Click and drag on the timeline chart** below to zoom into a specific date range.
+        - **Hover over the lines** on the chart to view exact usage values and details.
+        - **Click the button on the top right corner of the table** to download the data as a CSV file.
+        """
+    )
+
     interval = alt.selection_interval(encodings=['x'], value={'x': date_range})
     selection = alt.selection_point(fields=[legend], bind='legend')
     highlight = alt.selection_point(
         on="pointerover", fields=[label_x], nearest=True, clear="pointerout"
     )
+
+    # Generate tooltip based on the provided dictionary
+    if dict_tooltips:
+        tooltip = generate_tooltip(dict_tooltips)
+    else:
+        tooltip = [
+            alt.Tooltip(f'{label_x}:T', title=f'{label_x}', format='%b %Y'),
+            alt.Tooltip(f'{legend}:N', title=f'{legend}'),
+            alt.Tooltip(f'{label_y}:Q', title=f'{label_y}')
+        ]
 
     # Create a base chart
     base = alt.Chart(data).mark_line().encode(
@@ -29,6 +65,7 @@ def render_chart(data, label_x, label_y, legend, title, divider, date_range):
         y=alt.Y(f'{label_y}:Q'),
         color=f'{legend}:N',
         opacity=alt.condition(selection, alt.value(1), alt.value(0.2)),
+        tooltip=tooltip
     ).properties(
         width=600,
         height=200
@@ -36,7 +73,7 @@ def render_chart(data, label_x, label_y, legend, title, divider, date_range):
 
     # Create a chart for showing the selected interval
     upper = base.encode(
-        alt.X(f'{label_x}:T').scale(domain=interval), # show the selected interval
+        alt.X(f'{label_x}:T', axis=alt.Axis(format='%b %Y')).scale(domain=interval), # show the selected interval
         alt.Y(f'{label_y}:Q').scale(zero=False), # to remove the zero line if not needed
     )
 
@@ -52,72 +89,144 @@ def render_chart(data, label_x, label_y, legend, title, divider, date_range):
 
     st.altair_chart((upper + circle) & view, use_container_width=False)
 
-def get_weekly_data():
-    query = f"""
-            SELECT
-                EXTRACT(YEAR FROM end_date_time) AS year,
-                meter_name,
-                SUM(total_usage_kwh) AS total_usage_kwh,
-                strftime(end_date_time, '%A') AS day_name
-            FROM {st.secrets.datasource.schema_name}.fact_meter_readings
-            GROUP BY EXTRACT(YEAR FROM end_date_time),
-                     strftime(end_date_time, '%A'),
-                     EXTRACT(DOW FROM end_date_time),
-                     meter_name 
-            ORDER BY year, meter_name ASC;
-            """
+def get_df_monthly_summary():
+    query = db.get_query_monthly_kwh_and_charge_event(st.secrets.datasource.schema_name)
     return get_df_from_db(query)
 
+def get_weekly_data():
+    query = db.get_query_daily_kwh_(st.secrets.datasource.schema_name)
+    return get_df_from_db(query)
+
+def get_pivot_monthly_summary(df):
+    # Pivot the DataFrame to show meters as columns
+    pivot_df = df.pivot_table(
+        index=['year_no','month_no'],
+        columns='meter_name',
+        values=['charging_events','total_usage_kwh'],
+        aggfunc='sum',
+    ).fillna(0)
+    
+    return pivot_df
+
+def render_df_monthly_summary(df):
+    display_df = df.copy()
+    display_df.rename(
+        columns={col: f"{col} (kWh)" for col in display_df.columns[1:]},
+        inplace=True
+    )
+
+    # Rename the last index if it's a string like "Total"
+    if isinstance(display_df.index[-1], str):
+        display_df.index = [
+            f"{i} (kWh)" if i == display_df.index[-1] else i
+            for i in display_df.index
+        ]
+
+    st.dataframe(display_df, use_container_width=True)
+
+def get_totals(df):
+    # Calculate the totals for each meter
+    totals = df.sum(axis=0).to_frame().T
+    totals.index = [('Total', '')]
+    # Append the totals to the original DataFrame
+    df = pd.concat([df, totals], ignore_index=False)
+    df.index = df.index.map(lambda idx: tuple(str(i) for i in idx))
+    # df.index = df.index.set_levels(df.index.levels[1].astype(str), level=0)
+
+    # Calculate the totals for each column
+    cols = df.columns.get_level_values(1).unique().to_list()
+    totals_row = []
+    for col in cols:
+        total = df.xs(col, axis=1, level=1).sum(axis=1)
+        totals_row.append(total)
+
+    df_totals_row = pd.DataFrame(totals_row).T
+    df_totals_row.columns = ['Charging Events', 'Total Usage (kWh)']
+
+    # Convert to MultiIndex columns with 'Total' as the top level
+    df_totals_row.columns = pd.MultiIndex.from_product([['Total'], df_totals_row.columns])
+
+    # Concatenate to the original DataFrame
+    df = pd.concat([df, df_totals_row], axis=1)
+    return df
+
+def render_metrics_all_time(df):
+    df.index = df.index.set_levels(
+        ['Charging Events', 'Total Usage (kWh)'],
+        level=1
+    )
+    # st.dataframe(df, use_container_width=True)
+    # Extract the meter names from the columns
+    index_l0 = df.index.levels[0]
+    # Extract metric names from the columns
+    index_l1 = df.index.levels[1]
+
+    for i in range(len(index_l1)):
+        st.subheader(f"**{index_l1[i]}**", divider="rainbow")
+        cols = st.columns(len(index_l0))
+        for j, col in enumerate(cols):
+            col.metric(
+                label=index_l0[j],
+                value=f"{df[index_l0[j]].loc[index_l1[i]]:.2f}",
+                delta=None, delta_color="normal", label_visibility="visible", border=True)
+
 def app():
-    query = f"""
-            SELECT 
-                date_trunc('month', start_date_time) AS month,
-                meter_name,
-                SUM(total_usage_kwh) AS total_usage_kwh
-            FROM {st.secrets.datasource.schema_name}.fact_meter_readings
-            GROUP BY month, meter_name
-            ORDER BY month, meter_name;
-            """
+    
     
     st.write("Fetching data from the database...")
     
     # Fetch data
-    df = get_df_from_db(query)
+    df_base = get_df_monthly_summary()
+    # st.dataframe(df_base, use_container_width=True)
+
     
     # Display data in the app
-    if not df.empty:
+    if not df_base.empty:
         st.write("Data fetched successfully!")
-        st.title("Monthly Meter Usage")
 
-        # Get min and max month
-        min_date, max_date = df['month'].min(), df['month'].max()
+        st.title("VTEC Charger Data Dashboard")
+        st.subheader("Dashboard Overview", divider="rainbow")
+        st.markdown(
+        """
+        This dashboard visualizes the usage trends of VTEC chargers over time. Data is aggregated monthly by meter and presented through interactive charts.
 
-        # Date slider
-        with st.sidebar:
-            # Generate a list of month start dates
-            months = pd.date_range(min_date, max_date, freq='MS').to_pydatetime().tolist()
+        Use the sidebar to filter by month and explore:
 
-            filter_min_date, filter_max_date = st.select_slider(
-                "Select month range",
-                options=months,
-                value=(months[0], months[-1]),
-                format_func=lambda date: date.strftime('%b %Y')
-            )
+        - **Total usage per meter**
+        - **Daily usage patterns** for each meter
+        - **Monthly comparisons** across meters
 
-        # Filter data based on selections
-        filtered_df = df[
-            (df['month'] >= filter_min_date.date())
-            & (df['month'] <= filter_max_date.date())
-        ]
+        Gain insights into when and how VTEC chargers are being used most effectively.
+        """)
 
-        # Interval Default Range
-        start_date = filter_max_date - \
-            pd.offsets.DateOffset(months=11)
+        st.subheader("All-Time Usage")
+        # Pivot the DataFrame to show meters as columns
+        df_pivot_monthly_summary = get_pivot_monthly_summary(df_base)
+
+        # Reorder MultiIndex to: meter_name (level 0), metric (level 1)
+        df_pivot_monthly_summary.columns = df_pivot_monthly_summary.columns.swaplevel(0, 1)
+        df_pivot_monthly_summary = df_pivot_monthly_summary.sort_index(axis=1, level=0)
+        # st.dataframe(df_pivot_monthly_summary, use_container_width=True)
+
         
-        date_range = (start_date.date(), filter_max_date)
+        # Display all-time metrics
+        df_totals_condensed = df_pivot_monthly_summary.sum()
+        # st.subheader("All-Time Usage Totals")
+        # st.dataframe(df_totals, use_container_width=True)
+        render_metrics_all_time(df_totals_condensed)
+
+        # Get date range from today - 11 months
+        date_range = (date.today(), date.today())
+
+        df_timestamp = df_base.copy()
+        df_timestamp['month'] = pd.to_datetime(
+            df_timestamp['year_no'].astype(str) + '-' +
+            df_timestamp['month_no'].astype(str)
+        ).dt.strftime('%b %Y')
+        # df_timestamp['month'] = df_timestamp['month']
         
         render_chart(
-            data=filtered_df,
+            data=df_timestamp,
             label_x='month',
             label_y='total_usage_kwh',
             legend='meter_name',
@@ -126,27 +235,10 @@ def app():
             date_range=date_range
         )
 
-        # Pivot the DataFrame to show meters as columns
-        pivot_df = df.pivot_table(
-            index='month',
-            columns='meter_name',
-            values='total_usage_kwh',
-            aggfunc='sum',
-            dropna=False
-        ).fillna(0)
-
-        # Add row totals (across meters)
-        pivot_df['Total'] = pivot_df.sum(axis=1)
-
-        pivot_df.reset_index(inplace=True)
-
-        pivot_df['month'].apply(lambda x: x.strftime('%m/%Y'))
-
-        # # Add column totals (across months)
-        pivot_df.loc['Total'] = pivot_df.sum(numeric_only=True, min_count=1)
-
-        # Display
-        st.dataframe(pivot_df, use_container_width=True)
+        # Get totals
+        df_totals = get_totals(df_pivot_monthly_summary)
+        # Display the monthly summary table
+        render_df_monthly_summary(df_totals)
     else:
         st.warning("No data available.")
 
@@ -162,7 +254,15 @@ def app():
         # Create legend selection for year
         year_selection = alt.selection_point(fields=['year'], bind='legend')
 
-        st.title("Meter Usage by Day of the Week")
+        st.subheader("Meter Usage by Day of the Week", divider="rainbow")
+        st.markdown(
+            """
+            This chart shows the total usage of each meter by day of the week.
+            - **Click on the legend** to toggle year selection.
+            - **Hover over the bars** to view exact usage values and details.
+            - Click the button on the top right corner of the chart to download an image.
+            """
+        )
 
         # Create grouped bar chart
         base_chart = alt.Chart(df_weekly).mark_bar().encode(
