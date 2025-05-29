@@ -16,3 +16,6 @@ font="sans serif"
  #BE4127
  #81ACBB
  #F8962F
+
+[server]
+fileWatcherType = "poll"
