@@ -292,7 +292,7 @@ def app():
         df_timestamp['month'] = pd.to_datetime(
             df_timestamp['year_no'].astype(str) + '-' +
             df_timestamp['month_no'].astype(str)
-        ).dt.strftime('%b %Y')
+        )
         
         render_chart(
             data=df_timestamp,
