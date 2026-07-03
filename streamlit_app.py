@@ -46,10 +46,10 @@ def render_chart(data, label_x, label_y, legend, title, date_range, custom_color
             unsafe_allow_html=True
         )
 
-    interval = alt.selection_interval(encodings=['x'], value={'x': date_range})
-    selection = alt.selection_point(fields=[legend], bind='legend')
+    interval = alt.selection_interval(name='zoom_interval', encodings=['x'], value={'x': date_range})
+    selection = alt.selection_point(name='legend_selection', fields=[legend], bind='legend')
     highlight = alt.selection_point(
-        on="pointerover", fields=[label_x], nearest=True, clear="pointerout"
+        name='point_highlight', on="pointerover", fields=[label_x], nearest=True, clear="pointerout"
     )
 
     # Generate tooltip based on the provided dictionary
@@ -286,7 +286,7 @@ def app():
         render_metrics_all_time(df_totals_condensed)
 
         # Get date range from today - 11 months
-        date_range = (date.today(), date.today())
+        date_range = (pd.Timestamp.today() - pd.DateOffset(months=11), pd.Timestamp.today())
 
         df_timestamp = filtered_df.copy()
         df_timestamp['month'] = pd.to_datetime(
