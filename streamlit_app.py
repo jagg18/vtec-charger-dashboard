@@ -258,7 +258,7 @@ def app():
 
         # Check if a valid range was selected
         if start_date <= end_date:
-            filtered_df = df_base[(df_base['month'] >= start_date) & (df_base['month'] <= end_date)]
+            filtered_df = df_base[(df_base['month'] >= pd.Timestamp(start_date)) & (df_base['month'] <= pd.Timestamp(end_date))]
         else:
             filtered_df = df_base
 
